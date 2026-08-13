@@ -207,6 +207,7 @@ export default function WaitstaffPWA() {
 
   const [activeTab, setActiveTab] = useState<'tables' | 'orders'>('tables');
   const [requestVoidDialog, setRequestVoidDialog] = useState<string | null>(null);
+  const [isRequestingVoid, setIsRequestingVoid] = useState(false);
 
   // Subscriptions
   useSubscription<any>(ORDER_CREATED, {
@@ -257,7 +258,7 @@ export default function WaitstaffPWA() {
             localStorage.removeItem('db_mobile_userId');
             localStorage.removeItem('db_mobile_userName');
           } else {
-            setShiftOpen(true);
+            toast.error('Failed to open shift: ' + msg); // SECURITY/UX FIX: Do not silently open shift on failure
           }
         });
     }
@@ -322,12 +323,14 @@ export default function WaitstaffPWA() {
 
   const handleRequestVoid = async () => {
     if (!requestVoidDialog) return;
+    setIsRequestingVoid(true);
     try {
-      await requestVoid({ variables: { id: requestVoidDialog } });
+      await requestVoid({ variables: { orderId: requestVoidDialog, reason: 'Requested from mobile' } });
       toast.success('Void requested — alerting Cashier');
       setRequestVoidDialog(null);
       refetchOrders();
     } catch (e: any) { toast.error(e.message); }
+    finally { setIsRequestingVoid(false); }
   };
 
   const tables = tablesData?.tableOccupancy || [];
@@ -604,8 +607,10 @@ export default function WaitstaffPWA() {
             <p>Are you sure you want to request a void for this order? This will immediately alert the cashier.</p>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRequestVoidDialog(null)}>Cancel</Button>
-            <Button variant="destructive" onClick={handleRequestVoid}>Request Void</Button>
+            <Button variant="outline" onClick={() => setRequestVoidDialog(null)} disabled={isRequestingVoid}>Cancel</Button>
+            <Button variant="destructive" onClick={handleRequestVoid} disabled={isRequestingVoid}>
+              {isRequestingVoid ? 'Requesting...' : 'Request Void'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
