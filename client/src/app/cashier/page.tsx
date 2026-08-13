@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { getTokenKey } from '@/lib/apollo';
 import { gql } from '@apollo/client';
 import { useQuery, useMutation, useSubscription } from '@apollo/client/react';
@@ -197,6 +197,7 @@ function CashierDashboard({ onLogout }: { onLogout: () => void }) {
   const [reconDialog, setReconDialog] = useState<{ shiftId: string; waitressName: string; expected: number } | null>(null);
   const [recon, setRecon] = useState({ waitressDeclared: '', waitressPin: '', cashierDeclared: '', cashierPin: '' });
   const [reconResult, setReconResult] = useState<any>(null);
+  const [isSubmittingRecon, setIsSubmittingRecon] = useState(false);
   const [printOrder, setPrintOrder] = useState<Order | null>(null);
   const [amendDialog, setAmendDialog] = useState<{ orderId: string; tableNumber: string; items: { productId: string; productName: string; quantity: number; unitPrice: number }[]; reason: string } | null>(null);
   const [rejectVoidDialog, setRejectVoidDialog] = useState<string | null>(null);
@@ -376,6 +377,7 @@ function CashierDashboard({ onLogout }: { onLogout: () => void }) {
 
   const submitDualDeclaration = async () => {
     if (!reconDialog) return;
+    setIsSubmittingRecon(true);
     try {
       const { data: dd } = await dualDeclare({
         variables: {
@@ -396,21 +398,23 @@ function CashierDashboard({ onLogout }: { onLogout: () => void }) {
       setReconDialog(null);
       refetchShifts();
     } catch (e: any) { toast.error(e.message); }
+    finally { setIsSubmittingRecon(false); }
   };
 
   // Grouped orders
-  const activeOrders = orders.filter(o => ['PENDING', 'PRINTED', 'PRINT_FAILED', 'AMEND_REQUESTED'].includes(o.status));
-  const voidOrders = orders.filter(o => ['VOID_REQUESTED', 'LOCKED_VOID', 'PENDING_CASH_RESOLUTION'].includes(o.status));
+  const activeOrders = useMemo(() => orders.filter(o => ['PENDING', 'PRINTED', 'PRINT_FAILED', 'AMEND_REQUESTED'].includes(o.status)), [orders]);
+  const voidOrders = useMemo(() => orders.filter(o => ['VOID_REQUESTED', 'LOCKED_VOID', 'PENDING_CASH_RESOLUTION'].includes(o.status)), [orders]);
   const shifts = shiftsData?.activeShifts || [];
 
-  const groupedActiveOrders = activeOrders.reduce((acc, order) => {
+  const groupedActiveOrders = useMemo(() => activeOrders.reduce((acc, order) => {
     const wName = order.waitress?.name || 'Unknown';
     if (!acc[wName]) acc[wName] = { waitressName: wName, orders: [], expectedCash: 0, expanded: true };
     acc[wName].orders.push(order);
     acc[wName].expectedCash += order.totalAmount;
     return acc;
-  }, {} as Record<string, { waitressName: string; orders: Order[]; expectedCash: number; expanded: boolean }>);
-  const groupedOrdersArray = Object.values(groupedActiveOrders).sort((a, b) => a.waitressName.localeCompare(b.waitressName));
+  }, {} as Record<string, { waitressName: string; orders: Order[]; expectedCash: number; expanded: boolean }>), [activeOrders]);
+  
+  const groupedOrdersArray = useMemo(() => Object.values(groupedActiveOrders).sort((a, b) => a.waitressName.localeCompare(b.waitressName)), [groupedActiveOrders]);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -722,7 +726,7 @@ function CashierDashboard({ onLogout }: { onLogout: () => void }) {
           <div className="flex flex-col gap-5">
             <div className="p-3 rounded-lg bg-muted flex items-center justify-between">
               <span className="text-sm text-muted-foreground">System Expected Cash</span>
-              <span className="font-bold">ETB {reconDialog?.expected ?? 0}</span>
+              <span className="font-bold text-muted-foreground">HIDDEN</span>
             </div>
             <Separator />
             <div className="flex flex-col gap-3">
@@ -741,8 +745,10 @@ function CashierDashboard({ onLogout }: { onLogout: () => void }) {
             </div>
           </div>
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setReconDialog(null)}>Cancel</Button>
-            <Button onClick={submitDualDeclaration} disabled={!recon.waitressDeclared || !recon.cashierDeclared || !recon.waitressPin || !recon.cashierPin} className="active:scale-[0.97] transition-transform duration-100">Submit Reconciliation</Button>
+            <Button variant="outline" onClick={() => setReconDialog(null)} disabled={isSubmittingRecon}>Cancel</Button>
+            <Button onClick={submitDualDeclaration} disabled={isSubmittingRecon || !recon.waitressDeclared || !recon.cashierDeclared || !recon.waitressPin || !recon.cashierPin} className="active:scale-[0.97] transition-transform duration-100">
+              {isSubmittingRecon ? 'Submitting...' : 'Submit Reconciliation'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

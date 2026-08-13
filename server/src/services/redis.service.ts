@@ -3,39 +3,83 @@ import Redis from 'ioredis';
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 
-let redis: Redis;
+let redis: Redis | null = null;
+let useRedis = process.env.NODE_ENV === 'production'; 
+
+// In-memory fallback
+const memStore = new Map<string, { count: number; exp: number }>();
+
+function memIncr(key: string, ttlSeconds: number): number {
+  const now = Date.now();
+  let item = memStore.get(key);
+  if (!item || now > item.exp) item = { count: 0, exp: now + (ttlSeconds * 1000) };
+  item.count++;
+  memStore.set(key, item);
+  return item.count;
+}
 
 export function getRedis(): Redis {
   if (!redis) {
-    redis = new Redis({ host: REDIS_HOST, port: REDIS_PORT, lazyConnect: true });
-    redis.on('error', (e) => console.warn('[Redis] Error:', e.message));
+    redis = new Redis({ 
+      host: REDIS_HOST, 
+      port: REDIS_PORT, 
+      lazyConnect: true,
+      maxRetriesPerRequest: 1, 
+      retryStrategy: () => null 
+    });
+    redis.on('error', (e) => {
+      console.warn('[Redis] Unreachable. Using in-memory fallback for local dev.');
+      useRedis = false;
+    });
   }
   return redis;
 }
 
-// PIN brute-force lockout — 5 attempts in 15-minute window per orderId
 export async function trackVoidAttempt(orderId: string): Promise<number> {
-  const r = getRedis();
   const key = `void_attempts:${orderId}`;
-  const count = await r.incr(key);
-  await r.expire(key, 900); // 15-minute window
-  return count;
+  if (!useRedis) return memIncr(key, 900);
+  try {
+    const r = getRedis();
+    const count = await r.incr(key);
+    await r.expire(key, 900);
+    return count;
+  } catch {
+    useRedis = false;
+    return memIncr(key, 900);
+  }
 }
 
 export async function clearVoidAttempts(orderId: string): Promise<void> {
-  await getRedis().del(`void_attempts:${orderId}`);
+  const key = `void_attempts:${orderId}`;
+  if (!useRedis) { memStore.delete(key); return; }
+  try { await getRedis().del(key); } catch { useRedis = false; memStore.delete(key); }
 }
 
 export async function getVoidAttempts(orderId: string): Promise<number> {
-  const val = await getRedis().get(`void_attempts:${orderId}`);
-  return val ? parseInt(val, 10) : 0;
+  const key = `void_attempts:${orderId}`;
+  if (!useRedis) {
+    const item = memStore.get(key);
+    return (item && item.exp > Date.now()) ? item.count : 0;
+  }
+  try {
+    const val = await getRedis().get(key);
+    return val ? parseInt(val, 10) : 0;
+  } catch {
+    useRedis = false;
+    return 0;
+  }
 }
 
-// Cashier Misconduct Alert — track LOCKED_VOID count per cashier per shift
 export async function trackLockedVoid(cashierId: string, shiftId: string): Promise<number> {
-  const r = getRedis();
   const key = `locked_void_count:${cashierId}:${shiftId}`;
-  const count = await r.incr(key);
-  await r.expire(key, 86400); // 24 hours
-  return count;
+  if (!useRedis) return memIncr(key, 86400);
+  try {
+    const r = getRedis();
+    const count = await r.incr(key);
+    await r.expire(key, 86400);
+    return count;
+  } catch {
+    useRedis = false;
+    return memIncr(key, 86400);
+  }
 }
