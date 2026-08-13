@@ -39,3 +39,25 @@ export async function trackLockedVoid(cashierId: string, shiftId: string): Promi
   await r.expire(key, 86400); // 24 hours
   return count;
 }
+
+// Global Login Brute-Force Protection
+// Tracks login attempts per IP address
+export async function trackLoginAttempt(ip: string): Promise<number> {
+  const r = getRedis();
+  const key = `login_attempts:${ip}`;
+  const count = await r.incr(key);
+  // Lockout window is 15 minutes
+  if (count === 1) {
+    await r.expire(key, 900);
+  }
+  return count;
+}
+
+export async function clearLoginAttempts(ip: string): Promise<void> {
+  await getRedis().del(`login_attempts:${ip}`);
+}
+
+export async function getLoginAttempts(ip: string): Promise<number> {
+  const val = await getRedis().get(`login_attempts:${ip}`);
+  return val ? parseInt(val, 10) : 0;
+}

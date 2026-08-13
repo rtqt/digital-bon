@@ -6,7 +6,7 @@ import { Shift } from '../../models/shift.model';
 import { GraphQLError } from 'graphql';
 import bcrypt from 'bcrypt';
 import mongoose from 'mongoose';
-import { trackVoidAttempt, clearVoidAttempts, trackLockedVoid } from '../../services/redis.service';
+import { trackVoidAttempt, clearVoidAttempts, trackLockedVoid, trackLoginAttempt, clearLoginAttempts } from '../../services/redis.service';
 import { pubsub, publishAdminAlert, ORDER_CREATED, ORDER_UPDATED } from './subscriptions';
 import { SystemLog } from '../../models/systemLog.model';
 
@@ -305,8 +305,9 @@ export const orderMutations = {
       return obj;
     },
 
-    amendOrder: async (_: any, { orderId, newTableNumber, newItems, adminPin }: any, ctx: RequestContext | null) => {
+    amendOrder: async (_: any, { orderId, newTableNumber, newItems, adminPin }: any, ctx: any) => {
       const c = requireAuth(ctx);
+      const ip = ctx.ip || 'unknown';
       const order = await Order.findOne({ _id: orderId, cafeId: c.cafeId, status: 'PENDING' });
       if (!order) throw new GraphQLError('ONLY_PENDING_ORDERS_CAN_BE_AMENDED');
 
@@ -314,12 +315,20 @@ export const orderMutations = {
 
       if (isFinancialChange) {
         if (!adminPin) throw new GraphQLError('ADMIN_PIN_REQUIRED');
+
+        const attempts = await trackLoginAttempt(ip);
+        if (attempts > 5) {
+          throw new GraphQLError('TOO_MANY_PIN_ATTEMPTS', { extensions: { code: 'TOO_MANY_REQUESTS' } });
+        }
         const allUsers = await User.find({ cafeId: c.cafeId });
         let authAdmin: any = null;
         for (const u of allUsers) {
           if (await bcrypt.compare(adminPin, u.pinHash)) { authAdmin = u; break; }
         }
         if (!authAdmin) throw new GraphQLError('INVALID_ADMIN_PIN');
+
+        await clearLoginAttempts(ip);
+
         if (authAdmin._id.toString() === c.userId) throw new GraphQLError('DUAL_AUTH_REQUIRED: authorizedBy must differ from actorId');
 
         const products = await Product.find({ _id: { $in: newItems.map((i: any) => i.productId) }, cafeId: c.cafeId, isAvailable: true });

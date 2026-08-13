@@ -8,6 +8,7 @@ import bcrypt from 'bcrypt';
 import mongoose from 'mongoose';
 import { publishAdminAlert } from './subscriptions';
 import { SystemLog } from '../../models/systemLog.model';
+import { trackLoginAttempt, clearLoginAttempts } from '../../services/redis.service';
 
 export const shiftMutations = {
   Mutation: {
@@ -60,8 +61,15 @@ export const shiftMutations = {
       };
     },
 
-    submitDualDeclaration: async (_: any, { shiftId, waitressDeclared, waitressPin, cashierDeclared, cashierPin }: any, ctx: RequestContext | null) => {
+    submitDualDeclaration: async (_: any, { shiftId, waitressDeclared, waitressPin, cashierDeclared, cashierPin }: any, ctx: any) => {
       const c = requireAuth(ctx);
+      const ip = ctx.ip || 'unknown';
+      const attempts = await trackLoginAttempt(ip);
+
+      if (attempts > 5) {
+        throw new GraphQLError('TOO_MANY_PIN_ATTEMPTS', { extensions: { code: 'TOO_MANY_REQUESTS' } });
+      }
+
       const shift = await Shift.findOne({ _id: shiftId, cafeId: c.cafeId, status: 'RECONCILING' });
       if (!shift) throw new GraphQLError('SHIFT_NOT_IN_RECONCILING_STATE');
 
@@ -73,6 +81,8 @@ export const shiftMutations = {
       if (!waitressPinValid) throw new GraphQLError('INVALID_WAITRESS_PIN');
       const cashierPinValid = await bcrypt.compare(cashierPin, cashier.pinHash);
       if (!cashierPinValid) throw new GraphQLError('INVALID_CASHIER_PIN');
+
+      await clearLoginAttempts(ip);
 
       const expectedCash = waitress.currentLiability;
       const variance = cashierDeclared - expectedCash;
@@ -148,8 +158,15 @@ export const shiftMutations = {
       };
     },
 
-    countersignShortage: async (_: any, { shiftId, adminPin }: any, ctx: RequestContext | null) => {
+    countersignShortage: async (_: any, { shiftId, adminPin }: any, ctx: any) => {
       const c = requireAuth(ctx);
+      const ip = ctx.ip || 'unknown';
+      const attempts = await trackLoginAttempt(ip);
+
+      if (attempts > 5) {
+        throw new GraphQLError('TOO_MANY_PIN_ATTEMPTS', { extensions: { code: 'TOO_MANY_REQUESTS' } });
+      }
+
       const shift = await Shift.findOne({ _id: shiftId, cafeId: c.cafeId, status: 'CLOSED_SHORTAGE' });
       if (!shift) throw new GraphQLError('SHIFT_NOT_IN_SHORTAGE_STATE');
 
@@ -157,6 +174,8 @@ export const shiftMutations = {
       if (!admin) throw new GraphQLError('USER_NOT_FOUND');
       const pinValid = await bcrypt.compare(adminPin, admin.pinHash);
       if (!pinValid) throw new GraphQLError('INVALID_ADMIN_PIN');
+
+      await clearLoginAttempts(ip);
 
       const waitress = await User.findById(shift.waitressId);
       const expectedCash = waitress?.currentLiability ?? 0;

@@ -10,6 +10,9 @@ import { typeDefs } from './graphql/types';
 import { resolvers } from './graphql/resolvers';
 import { buildContext } from './middleware/auth';
 import { ensureReplicaSet, connectDB } from './startup';
+import { rateLimit } from 'express-rate-limit';
+import { RedisStore } from 'rate-limit-redis';
+import { getRedis } from './services/redis.service';
 
 async function main() {
   // Step 1: Replica set health gate
@@ -19,8 +22,24 @@ async function main() {
   await connectDB();
 
   const app = express();
+
+  app.set('trust proxy', 1);
+
+  // General DOS protection using express-rate-limit backed by Redis
+  const limiter = rateLimit({
+    store: new RedisStore({
+      sendCommand: (...args: string[]) => getRedis().call(args[0], ...args.slice(1)) as any,
+    }),
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 500, // limit each IP to 500 requests per windowMs
+    message: 'Too many requests from this IP, please try again after a minute',
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
   app.use(cors({ origin: '*' }));
   app.use(express.json());
+  app.use(limiter);
 
   const schema = makeExecutableSchema({ typeDefs, resolvers });
   const httpServer = http.createServer(app);
@@ -64,9 +83,10 @@ async function main() {
     expressMiddleware(apollo as any, {
       context: async ({ req }) => {
         const ctx = await buildContext(req);
-        return ctx || ({} as any);
+        // Inject IP address into context for resolvers to use (e.g. auth brute-force checking)
+        return ctx ? { ...ctx, ip: req.ip } : { ip: req.ip } as any;
       },
-    })
+    }) as any
   );
 
   app.get('/health', (_, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
