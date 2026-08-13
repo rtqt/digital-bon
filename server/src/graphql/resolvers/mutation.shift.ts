@@ -57,7 +57,7 @@ export const shiftMutations = {
         ...shift.toObject(),
         id: shift._id.toString(),
         openedAt: shift.openedAt?.toISOString(),
-        systemExpectedCash: expectedCash,
+        systemExpectedCash: null, // SECURITY FIX: Do not leak expected cash to client
       };
     },
 
@@ -69,6 +69,7 @@ export const shiftMutations = {
       if (attempts > 5) {
         throw new GraphQLError('TOO_MANY_PIN_ATTEMPTS', { extensions: { code: 'TOO_MANY_REQUESTS' } });
       }
+      if (!c.permissions.includes('PROCESS_PAYMENTS')) throw new GraphQLError('UNAUTHORIZED'); // SECURITY FIX: Ensure only cashiers can process payments
 
       const shift = await Shift.findOne({ _id: shiftId, cafeId: c.cafeId, status: 'RECONCILING' });
       if (!shift) throw new GraphQLError('SHIFT_NOT_IN_RECONCILING_STATE');
@@ -172,6 +173,12 @@ export const shiftMutations = {
 
       const admin = await User.findById(c.userId);
       if (!admin) throw new GraphQLError('USER_NOT_FOUND');
+
+      // SECURITY FIX: Prevent admin from countersigning their own shift if they were the cashier or waitress
+      if (admin._id.toString() === shift.waitressId.toString() || admin._id.toString() === shift.cashierId?.toString()) {
+        throw new GraphQLError('CANNOT_COUNTERSIGN_OWN_SHIFT');
+      }
+
       const pinValid = await bcrypt.compare(adminPin, admin.pinHash);
       if (!pinValid) throw new GraphQLError('INVALID_ADMIN_PIN');
 

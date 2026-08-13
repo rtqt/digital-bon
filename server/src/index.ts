@@ -35,6 +35,7 @@ async function main() {
     message: 'Too many requests from this IP, please try again after a minute',
     standardHeaders: true,
     legacyHeaders: false,
+    passOnStoreError: true, // Fail open if Redis is down (e.g. local dev)
   });
 
   app.use(cors({ origin: '*' }));
